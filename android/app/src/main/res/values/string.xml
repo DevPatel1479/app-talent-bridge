@@ -1,0 +1,8 @@
+
+<resources>
+    <string name="app_name">talentbridge</string>
+    <string name="facebook_app_id">550417768016891</string>
+    <string name="fb_login_protocol_scheme">fb550417768016891</string>
+    <string name="facebook_client_token">4762992a0821ada6cec4181201baea12</string>
+
+</resources>
