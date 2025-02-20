@@ -9,8 +9,8 @@ import 'additional_info_screen.dart';
 
 class SignupScreen extends StatefulWidget {
   final VoidCallback onToggleAuth;
-
-  const SignupScreen({super.key, required this.onToggleAuth});
+  final String userRole;
+  const SignupScreen({super.key, required this.onToggleAuth, required this.userRole});
 
   @override
   _SignupScreenState createState() => _SignupScreenState();
@@ -32,7 +32,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   bool _obscurePassword = true;
   String? errorMessage;
-
+  
   // For loading animation.
   bool _isLoading = false;
   // To store the complete phone number from IntlPhoneField.
@@ -58,13 +58,14 @@ class _SignupScreenState extends State<SignupScreen> {
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
-
+      
       await _auth.signInWithCredential(credential);
+      final String userR = widget.userRole;
       // After Google sign-in, navigate to the additional info screen.
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => const AdditionalInfoScreen(authType: "google"),
+          builder: (_) =>  AdditionalInfoScreen(authType: "google", userRole: userR,),
         ),
       );
     } catch (e) {
@@ -94,7 +95,7 @@ class _SignupScreenState extends State<SignupScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => AdditionalInfoScreen(authType: "facebook"),
+            builder: (_) => AdditionalInfoScreen(authType: "facebook", userRole: widget.userRole,),
           ),
         );
       } else {
@@ -159,6 +160,7 @@ class _SignupScreenState extends State<SignupScreen> {
           "address": addressController.text.trim(),
           "createdAt": FieldValue.serverTimestamp(),
           "authType": "email",
+          "userRole": widget.userRole
         });
       }
     } catch (e) {
@@ -302,7 +304,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   const SizedBox(height: 15),
                   IntlPhoneField(
                     decoration: InputDecoration(
-                      labelText: 'Phone Number (include country code)',
+                      labelText: 'Phone Number',
                       labelStyle: const TextStyle(color: Colors.white70),
                       filled: true,
                       fillColor: Colors.white.withOpacity(0.1),

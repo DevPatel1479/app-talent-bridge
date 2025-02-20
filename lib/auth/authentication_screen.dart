@@ -3,7 +3,8 @@ import '../screens/login_screen.dart';
 import '../screens/signup_screen.dart';
 
 class AuthenticationScreen extends StatefulWidget {
-  const AuthenticationScreen({super.key});
+  final String userRole;
+  const AuthenticationScreen({super.key, required this.userRole});
 
   @override
   _AuthenticationScreenState createState() => _AuthenticationScreenState();
@@ -41,46 +42,43 @@ class _AuthenticationScreenState extends State<AuthenticationScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: 
-         Stack(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(seconds: 1),
-              curve: Curves.easeInOut,
+      body: Stack(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(seconds: 1),
+            curve: Curves.easeInOut,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: isLogin
+                    ? [Colors.teal, Colors.blueAccent]
+                    : [Colors.green.shade300, Colors.green.shade700],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: isLogin
-                      ? [Colors.teal, Colors.blueAccent]
-                      : [Colors.green.shade300, Colors.green.shade700],
+                  colors: [
+                    Colors.black.withOpacity(0.5),
+                    Colors.black.withOpacity(0.2)
+                  ],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
               ),
-              child: Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.black.withOpacity(0.5),
-                      Colors.black.withOpacity(0.2)
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                ),
-              ),
             ),
-            isLogin
-                ? LoginScreen(
-                    onToggleAuth: _toggleAuthMode,
-                  )
-                : SignupScreen(
-                    onToggleAuth: _toggleAuthMode,
-                  ),
-          ],
-        ),
-      
+          ),
+          isLogin
+              ? LoginScreen(
+                  onToggleAuth: _toggleAuthMode,
+                )
+              : SignupScreen(
+                  onToggleAuth: _toggleAuthMode,
+                  userRole: widget.userRole,
+                ),
+        ],
+      ),
     );
   }
 }
-
-

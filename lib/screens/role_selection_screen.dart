@@ -121,7 +121,7 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
                       icon: Icons.business,
                       color: Colors.blueAccent,
                       onTap: () =>
-                          _navigateToScreen(screen: AuthenticationScreen()),
+                          _navigateToScreen(screen: AuthenticationScreen(userRole: "Client",)),
                     ),
                   ),
                 ),
