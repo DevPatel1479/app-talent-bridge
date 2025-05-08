@@ -1,22 +1,42 @@
+import 'dart:convert';
+
+import 'package:keyboard_dismisser/keyboard_dismisser.dart';
+import 'package:flutter/widgets.dart';
+
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
+import 'package:talentbridge/api_services/api_service.dart';
+import 'package:talentbridge/model/StateDistrictDataModel.dart';
+import 'package:talentbridge/model/UserInfoModel.dart';
+import 'package:talentbridge/screens/otp_verification_screen.dart';
+import 'package:talentbridge/utils/hash_utils.dart';
 import 'additional_info_screen.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+
+import 'package:country_list_pick/country_list_pick.dart';
 
 class SignupScreen extends StatefulWidget {
   final VoidCallback onToggleAuth;
   final String userRole;
-  const SignupScreen({super.key, required this.onToggleAuth, required this.userRole});
+  const SignupScreen(
+      {super.key, required this.onToggleAuth, required this.userRole});
 
   @override
   _SignupScreenState createState() => _SignupScreenState();
 }
 
-class _SignupScreenState extends State<SignupScreen> {
+class _SignupScreenState extends State<SignupScreen>
+    with WidgetsBindingObserver {
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Controllers for the input fields.
@@ -27,16 +47,94 @@ class _SignupScreenState extends State<SignupScreen> {
   final TextEditingController confirmPasswordController =
       TextEditingController();
   // Note: We're not using phoneController here because IntlPhoneField gives us a complete number.
-  final TextEditingController addressController = TextEditingController();
+  // final TextEditingController addressController = TextEditingController();
+// Variables for country dropdown.
 
+  String _selectedCountry = "India";
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   bool _obscurePassword = true;
   String? errorMessage;
-  
+
   // For loading animation.
   bool _isLoading = false;
   // To store the complete phone number from IntlPhoneField.
   String _completePhoneNumber = "";
+  File? _profileImage;
+  String? _profilePhotoUrl;
+  bool _isProcessingImage = false;
+  bool _pickerActive = false; // Add this flag
+
+  List<StateData> states = [];
+  String? selectedState;
+  List<String> districts = [];
+  String? selectedDistrict;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    loadStates();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _recoverFromAppPause();
+    }
+  }
+
+  Future<void> loadStates() async {
+    // Load the JSON file from assets
+    final String jsonString =
+        await rootBundle.loadString('assets/state_data.json');
+    final Map<String, dynamic> data = json.decode(jsonString);
+    final List<dynamic> statesJson = data['states'];
+
+    List<StateData> loadedStates =
+        statesJson.map((e) => StateData.fromJson(e)).toList();
+    // print(loadedStates);
+    setState(() {
+      states = loadedStates;
+      if (states.isNotEmpty) {
+        selectedState = states.first.state;
+        districts = states.first.districts;
+        selectedDistrict = districts.isNotEmpty ? districts.first : null;
+      }
+    });
+  }
+
+  Future<void> _recoverFromAppPause() async {
+    if (_isProcessingImage && !_pickerActive) {
+      await Future.delayed(const Duration(milliseconds: 500)); // Add delay
+
+      setState(() => _pickerActive = true);
+      try {
+        final image = await ImagePicker().pickImage(
+          source: ImageSource.camera,
+          requestFullMetadata: false, // Add for performance
+        );
+
+        if (image != null && mounted) {
+          setState(() {
+            _profileImage = File(image.path);
+            _isProcessingImage = false;
+          });
+        }
+      } catch (e) {
+        debugPrint('Image recovery error: $e');
+      } finally {
+        if (mounted) {
+          setState(() => _pickerActive = false);
+        }
+      }
+    }
+  }
 
   Future<void> _signInWithGoogle() async {
     setState(() {
@@ -62,12 +160,18 @@ class _SignupScreenState extends State<SignupScreen> {
       await _auth.signInWithCredential(credential);
       final String userR = widget.userRole;
       // After Google sign-in, navigate to the additional info screen.
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>  AdditionalInfoScreen(authType: "google", userRole: userR,),
-        ),
-      );
+      if (googleUser != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AdditionalInfoScreen(
+              authType: "google",
+              userRole: userR,
+              email: googleUser.email,
+            ),
+          ),
+        );
+      }
     } catch (e) {
       setState(() {
         errorMessage = "Google Sign-In Failed: ${e.toString()}";
@@ -91,11 +195,17 @@ class _SignupScreenState extends State<SignupScreen> {
         final OAuthCredential credential =
             FacebookAuthProvider.credential(accessToken.tokenString);
         await _auth.signInWithCredential(credential);
+
+        final userData = await FacebookAuth.instance.getUserData();
         // After Facebook sign-in, navigate to the additional info screen.
+
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => AdditionalInfoScreen(authType: "facebook", userRole: widget.userRole,),
+            builder: (_) => AdditionalInfoScreen(
+                authType: "facebook",
+                userRole: widget.userRole,
+                email: userData['email']),
           ),
         );
       } else {
@@ -115,12 +225,26 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   void _validateAndSubmit() async {
+    print(_profileImage);
+    if (_profileImage == null) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Please upload the Profile Photo"),
+        duration: Duration(seconds: 1),
+      ));
+
+      setState(() {
+        errorMessage = "Profile photo is required";
+      });
+      return;
+    }
     if (!_formKey.currentState!.validate()) {
       setState(() {
         errorMessage = "Please fix the errors in red";
       });
       return;
     }
+
     if (passwordController.text.trim() !=
         confirmPasswordController.text.trim()) {
       setState(() {
@@ -128,40 +252,117 @@ class _SignupScreenState extends State<SignupScreen> {
       });
       return;
     }
-    if (_completePhoneNumber.isEmpty) {
-      setState(() {
-        errorMessage = "Phone number is required";
-      });
-      return;
-    }
+
+    // if (_selectedCountry == null || _selectedCountry!.isEmpty) {
+    //   setState(() {
+    //     errorMessage = "Country selection is required";
+    //   });
+    //   return;
+    // }
+
     setState(() {
       _isLoading = true;
       errorMessage = null;
     });
     try {
-      // Create the user using email & password.
-      final userCredential = await _auth.createUserWithEmailAndPassword(
-        email: emailController.text.trim(),
-        password: passwordController.text.trim(),
-      );
-      final user = userCredential.user;
-      if (user != null) {
-        await user.updateDisplayName(nameController.text.trim());
-        // Store the additional data in Firestore with the phone number as the document ID.
-        await FirebaseFirestore.instance
-            .collection("users")
-            .doc(_completePhoneNumber)
-            .set({
-          "uid": user.uid,
-          "name": nameController.text.trim(),
-          "company": companyController.text.trim(),
-          "email": emailController.text.trim(),
-          "phone": _completePhoneNumber,
-          "address": addressController.text.trim(),
-          "createdAt": FieldValue.serverTimestamp(),
-          "authType": "email",
-          "userRole": widget.userRole
+      // Check if a user with the same phone number already exists.
+      final userDoc = await FirebaseFirestore.instance
+          .collection("users")
+          .where("email", isEqualTo: emailController.text.trim())
+          .get();
+
+      if (userDoc.docs.isNotEmpty) {
+        setState(() {
+          _isLoading = false;
         });
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Please Login, account already exists"),
+            backgroundColor: Colors.grey[800],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      // Create the user using email & password.
+      // final userCredential = await _auth.createUserWithEmailAndPassword(
+      //   email: emailController.text.trim(),
+      //   password: passwordController.text.trim(),
+      // );
+      // final user = userCredential.user;
+      // if (user != null) {
+      //   await user.updateDisplayName(nameController.text.trim());
+      // Store the additional data in Firestore with the phone number as the document ID.
+      // await FirebaseFirestore.instance
+      //     .collection("users")
+      //     .doc(_completePhoneNumber)
+      //     .set({
+      //   "uid": user.uid,
+      //   "name": nameController.text.trim(),
+      //   "company": companyController.text.trim(),
+      //   "email": emailController.text.trim(),
+      //   "phone": _completePhoneNumber,
+      //   "country": _selectedCountry,
+      //   // "address": addressController.text.trim(),
+      //   "createdAt": FieldValue.serverTimestamp(),
+      //   // "authType": "email",
+      //   "userRole": widget.userRole
+      // });
+
+// Save the profile image locally and retrieve its file path.
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String fileExtension = p.extension(_profileImage!.path);
+      final String fileName =
+          'profile_${nameController.text.trim()}$fileExtension';
+      final String localImagePath = p.join(appDocDir.path, fileName);
+      // Copy the file to local storage.
+      await _profileImage!.copy(localImagePath);
+
+      String hashPassword =
+          hashSensitiveInformation(passwordController.text.trim());
+
+      final data = UserInfoData(
+          uid: "tmp",
+          name: nameController.text.trim(),
+          company: companyController.text.trim(),
+          // phone: _completePhoneNumber,
+          country: _selectedCountry,
+          password: hashPassword,
+          userRole: widget.userRole,
+          email: emailController.text.trim(),
+          createdAt: FieldValue.serverTimestamp(),
+          profileImagePath: localImagePath,
+          state: selectedState!,
+          district: selectedDistrict!);
+
+      http.Response response = await API(service_type: {
+        "service_type": "email",
+        "data": emailController.text.trim()
+      }).sendOTP();
+      if (response.statusCode == 200) {
+        setState(() {
+          _isLoading = false;
+        });
+        Navigator.push(
+          context,
+          PageRouteBuilder(
+            transitionDuration: const Duration(milliseconds: 500),
+            pageBuilder: (context, animation, secondaryAnimation) =>
+                FadeTransition(
+              opacity: animation,
+              child: OtpVerificationScreen(data: data),
+            ),
+          ),
+        );
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Failed to send OTP. Please try again.")));
       }
     } catch (e) {
       setState(() {
@@ -190,13 +391,84 @@ class _SignupScreenState extends State<SignupScreen> {
       if (value != passwordController.text) {
         return "Passwords do not match";
       }
-    } else if (label == 'Phone Number') {
-      if (!RegExp(r"^[+0-9]{8,15}$").hasMatch(value)) {
-        return 'Enter a valid phone number';
-      }
     }
+
     // Other fields (Full Name, Company Name, Address) require only non-empty validation.
     return null;
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    if (_pickerActive) return; // Prevent multiple activations
+
+    try {
+      setState(() {
+        _isProcessingImage = true;
+        _pickerActive = true;
+      });
+
+      final pickedFile = await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 80,
+        maxWidth: 1080,
+        maxHeight: 1080,
+        requestFullMetadata: false,
+      );
+
+      if (pickedFile != null && mounted) {
+        setState(() => _profileImage = File(pickedFile.path));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessingImage = false;
+          _pickerActive = false;
+        });
+      }
+    }
+  }
+
+  void _handleImagePickerError(dynamic error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Image picker error: ${error.toString()}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+    if (_isProcessingImage) {
+      setState(() => _isProcessingImage = false);
+    }
+  }
+
+  void _showImagePickerOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: Colors.white),
+              title: const Text('Take Photo',
+                  style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: Colors.white),
+              title: const Text('Choose from Gallery',
+                  style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+          ],
+        ),
+      ),
+      backgroundColor: Colors.grey[850],
+    );
   }
 
   @override
@@ -214,22 +486,28 @@ class _SignupScreenState extends State<SignupScreen> {
         systemNavigationBarIconBrightness: Brightness.light,
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        backgroundColor: Colors.transparent,
         body: Stack(
           children: [
-            Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Color(0xFF1A1A1A),
-                    Color(0xFF121212),
-                  ],
+            Positioned.fill(
+              child: Container(
+                width: double.infinity,
+                height: double.infinity,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Color(0xFF1A1A1A),
+                      Color(0xFF121212),
+                    ],
+                  ),
                 ),
+                child: isPortrait
+                    ? _buildPortraitLayout(isSmallScreen)
+                    : _buildLandscapeWarning(),
               ),
-              child: isPortrait
-                  ? _buildPortraitLayout(isSmallScreen)
-                  : _buildLandscapeWarning(),
             ),
             if (_isLoading)
               AnimatedOpacity(
@@ -281,61 +559,223 @@ class _SignupScreenState extends State<SignupScreen> {
 
         // Scrollable Form Fields
         Expanded(
-          child: SingleChildScrollView(
-            padding: EdgeInsets.symmetric(
-              horizontal: isSmallScreen ? 20 : 30,
-            ),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                children: [
-                  const SizedBox(height: 30),
-                  _buildTextField("Full Name", nameController, false),
-                  const SizedBox(height: 15),
-                  _buildTextField("Company Name", companyController, false),
-                  const SizedBox(height: 15),
-                  _buildTextField("Email", emailController, false,
-                      keyboardType: TextInputType.emailAddress),
-                  const SizedBox(height: 15),
-                  _buildTextField("Password", passwordController, true),
-                  const SizedBox(height: 15),
-                  _buildTextField(
-                      "Confirm Password", confirmPasswordController, true),
-                  const SizedBox(height: 15),
-                  IntlPhoneField(
-                    decoration: InputDecoration(
-                      labelText: 'Phone Number',
-                      labelStyle: const TextStyle(color: Colors.white70),
-                      filled: true,
-                      fillColor: Colors.white.withOpacity(0.1),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 16,
+          child: KeyboardDismisser(
+            gestures: const [
+              GestureType.onTap,
+              GestureType.onPanUpdateDownDirection, // Corrected gesture name
+              GestureType.onVerticalDragDown,
+            ],
+            child: SingleChildScrollView(
+              physics: const ClampingScrollPhysics(),
+              padding: EdgeInsets.symmetric(
+                horizontal: isSmallScreen ? 20 : 30,
+              ),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 30),
+                    GestureDetector(
+                      onTap: _showImagePickerOptions,
+                      child: Center(
+                        child: Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 50,
+                              backgroundImage: _profileImage != null
+                                  ? FileImage(_profileImage!)
+                                  : (_profilePhotoUrl != null
+                                      ? NetworkImage(_profilePhotoUrl!)
+                                      : null),
+                              child: _profileImage == null &&
+                                      _profilePhotoUrl == null
+                                  ? const Icon(Icons.person,
+                                      size: 50, color: Colors.white70)
+                                  : null,
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              right: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF00C9A7),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.camera_alt,
+                                    size: 20, color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    initialCountryCode: 'US',
-                    style: const TextStyle(color: Colors.white),
-                    onChanged: (phone) {
-                      // Update the complete phone number.
-                      _completePhoneNumber = phone.completeNumber;
-                      print(phone.completeNumber);
-                    },
-                    validator: (phone) {
-                      if (phone == null || phone.number.isEmpty) {
-                        return "Phone number is required";
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 15),
-                  _buildTextField("Address", addressController, false),
-                  const SizedBox(height: 30),
-                  if (errorMessage != null) _buildErrorMessage(),
-                ],
+                    const SizedBox(height: 15),
+                    _buildTextField("Full Name", nameController, false),
+                    const SizedBox(height: 15),
+                    _buildTextField(
+                        "Company Name (Optional)", companyController, false),
+                    const SizedBox(height: 15),
+                    _buildTextField("Email", emailController, false,
+                        keyboardType: TextInputType.emailAddress),
+                    const SizedBox(height: 15),
+                    _buildTextField("Password", passwordController, true),
+                    const SizedBox(height: 15),
+                    _buildTextField(
+                        "Confirm Password", confirmPasswordController, true),
+                    // const SizedBox(height: 15),
+                    // IntlPhoneField(
+                    //   decoration: InputDecoration(
+                    //     labelText: 'Phone Number',
+                    //     labelStyle: const TextStyle(color: Colors.white70),
+                    //     filled: true,
+                    //     fillColor: Colors.white.withOpacity(0.1),
+                    //     border: OutlineInputBorder(
+                    //       borderRadius: BorderRadius.circular(12),
+                    //       borderSide: BorderSide.none,
+                    //     ),
+                    //     contentPadding: const EdgeInsets.symmetric(
+                    //       horizontal: 20,
+                    //       vertical: 16,
+                    //     ),
+                    //   ),
+                    //   initialCountryCode: 'US',
+                    //   style: const TextStyle(color: Colors.white),
+                    //   onChanged: (phone) {
+                    //     // Update the complete phone number.
+                    //     _completePhoneNumber = phone.completeNumber;
+                    //     print(phone.completeNumber);
+                    //   },
+                    //   validator: (phone) {
+                    //     if (phone == null || phone.number.isEmpty) {
+                    //       return "Phone number is required";
+                    //     }
+                    //     return null;
+                    //   },
+                    // ),
+                    const SizedBox(height: 15),
+                    InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: "Country",
+                        labelStyle: const TextStyle(color: Colors.white70),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.1),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 15, vertical: 15),
+                      ),
+                      child: Row(
+                        children: const [
+                          Text(
+                            '🇮🇳',
+                            style: TextStyle(fontSize: 24),
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'India',
+                            style:
+                                TextStyle(color: Colors.white70, fontSize: 16),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 15),
+                    // Dropdown for State selection with attractive border styling
+                    states.isEmpty
+                        ? const CircularProgressIndicator()
+                        : InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: "Select State",
+                              labelStyle: const TextStyle(
+                                  color: Colors.white70, fontSize: 18),
+                              filled: true,
+                              fillColor: Colors.white.withOpacity(0.1),
+                              // Here we style the border to be visible
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                    color: Colors.white70, width: 1.0),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 15, vertical: 15),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                isExpanded: true,
+                                value: selectedState,
+                                dropdownColor: Colors.black,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 16),
+                                items: states.map((stateData) {
+                                  return DropdownMenuItem<String>(
+                                    value: stateData.state,
+                                    child: Text(stateData.state),
+                                  );
+                                }).toList(),
+                                onChanged: (String? newState) {
+                                  setState(() {
+                                    selectedState = newState;
+                                    final stateData = states.firstWhere(
+                                      (element) => element.state == newState,
+                                      orElse: () => states.first,
+                                    );
+                                    districts = stateData.districts;
+                                    selectedDistrict = districts.isNotEmpty
+                                        ? districts.first
+                                        : null;
+                                  });
+                                },
+                              ),
+                            ),
+                          ),
+                    const SizedBox(height: 15),
+// Dropdown for District selection with attractive border styling
+                    states.isEmpty
+                        ? const SizedBox()
+                        : InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: "Select District",
+                              labelStyle: const TextStyle(
+                                  color: Colors.white70, fontSize: 18),
+                              filled: true,
+                              fillColor: Colors.white.withOpacity(0.1),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                    color: Colors.white70, width: 1.0),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 15, vertical: 15),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                isExpanded: true,
+                                value: selectedDistrict,
+                                dropdownColor: Colors.black,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 16),
+                                items: districts.map((district) {
+                                  return DropdownMenuItem<String>(
+                                    value: district,
+                                    child: Text(district),
+                                  );
+                                }).toList(),
+                                onChanged: (String? newDistrict) {
+                                  setState(() {
+                                    selectedDistrict = newDistrict;
+                                  });
+                                },
+                              ),
+                            ),
+                          ),
+
+                    const SizedBox(height: 30),
+                    if (errorMessage != null) _buildErrorMessage(),
+                  ],
+                ),
               ),
             ),
           ),
@@ -464,7 +904,9 @@ class _SignupScreenState extends State<SignupScreen> {
               )
             : null,
       ),
-      validator: (value) => _validateInput(label, value),
+      validator: (value) => label == "Company Name (Optional)"
+          ? null
+          : _validateInput(label, value),
     );
   }
 

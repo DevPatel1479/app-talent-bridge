@@ -2,19 +2,33 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+// import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:talentbridge/api_services/api_service.dart';
 import 'package:talentbridge/model/UserInfoModel.dart';
+import 'package:talentbridge/screens/client_dashboard_screen.dart';
 import 'package:talentbridge/screens/otp_verification_screen.dart';
+import 'package:country_list_pick/country_list_pick.dart';
+import 'package:talentbridge/utils/hash_utils.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:talentbridge/utils/local_storage_utils.dart';
+import 'package:talentbridge/model/StateDistrictDataModel.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'dart:convert';
 
 class AdditionalInfoScreen extends StatefulWidget {
   final String authType; // e.g., "google" or "facebook"
   final String userRole;
+  final String email;
   const AdditionalInfoScreen(
-      {Key? key, required this.authType, required this.userRole})
+      {Key? key,
+      required this.authType,
+      required this.userRole,
+      required this.email})
       : super(key: key);
 
   @override
@@ -26,7 +40,8 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
   final TextEditingController nameController = TextEditingController();
   final TextEditingController companyController = TextEditingController();
   final TextEditingController phoneController = TextEditingController();
-  final TextEditingController addressController = TextEditingController();
+  // final TextEditingController addressController = TextEditingController();
+  String _selectedCountry = "India";
   final TextEditingController passwordController = TextEditingController();
   final TextEditingController confirmPasswordController =
       TextEditingController();
@@ -41,15 +56,41 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
   String? errorMessage;
   String _completePhoneNumber = "";
 
+  List<StateData> states = [];
+  String? selectedState;
+  List<String> districts = [];
+  String? selectedDistrict;
+
   @override
   void initState() {
     super.initState();
+    loadStates();
     // Optionally prefill with current Firebase user details.
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       nameController.text = user.displayName ?? "";
       _profilePhotoUrl = user.photoURL;
     }
+  }
+
+  Future<void> loadStates() async {
+    // Load the JSON file from assets
+    final String jsonString =
+        await rootBundle.loadString('assets/state_data.json');
+    final Map<String, dynamic> data = json.decode(jsonString);
+    final List<dynamic> statesJson = data['states'];
+
+    List<StateData> loadedStates =
+        statesJson.map((e) => StateData.fromJson(e)).toList();
+    // print(loadedStates);
+    setState(() {
+      states = loadedStates;
+      if (states.isNotEmpty) {
+        selectedState = states.first.state;
+        districts = states.first.districts;
+        selectedDistrict = districts.isNotEmpty ? districts.first : null;
+      }
+    });
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -120,6 +161,8 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
             const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       ),
       validator: (value) {
+        if (label == "Company Name (Optional)") return null;
+
         if (value == null || value.isEmpty) return "$label is required";
         return null;
       },
@@ -232,12 +275,6 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
       });
       return;
     }
-    if (phoneController.text.trim().isEmpty) {
-      setState(() {
-        errorMessage = "Phone number is required";
-      });
-      return;
-    }
 
     showDialog(
       context: context,
@@ -288,7 +325,7 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                   text: TextSpan(
                     children: [
                       TextSpan(
-                        text: "SENDING ",
+                        text: "CREATING ",
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontSize: 18,
                           fontWeight: FontWeight.w800,
@@ -297,7 +334,7 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                         ),
                       ),
                       TextSpan(
-                        text: "OTP",
+                        text: "DASHBOARD",
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontSize: 18,
                           fontWeight: FontWeight.w800,
@@ -310,7 +347,7 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  "Please wait while we prepare your verification",
+                  "Please wait while we prepare your dashboard",
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.white70,
                     fontSize: 12,
@@ -328,60 +365,136 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
       errorMessage = null;
     });
 
+    final userDoc = await FirebaseFirestore.instance
+        .collection("users")
+        .where("email", isEqualTo: widget.email)
+        .get();
+
+    if (userDoc.docs.isNotEmpty) {
+      Navigator.pop(context);
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Please Login, account already exists"),
+          backgroundColor: Colors.grey[800],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     try {
       final user = FirebaseAuth.instance.currentUser;
 
       if (user != null) {
-        http.Response response = await API(
-                service_type: {"service_type": "email", "data": user.email!})
-            .sendOTP();
-        if (response.statusCode == 200) {
-          Navigator.pop(context);
-          final data = UserInfoData(
-              uid: user.uid,
-              name: nameController.text.trim(),
-              company: companyController.text.trim(),
-              phone: _completePhoneNumber,
-              address: addressController.text.trim(),
-              password: passwordController.text.trim(),
-              authType: "email",
-              userRole: widget.userRole,
-              email: user.email!,
-              createdAt: FieldValue.serverTimestamp());
-
-          Navigator.push(
-            context,
-            PageRouteBuilder(
-              transitionDuration: const Duration(milliseconds: 500),
-              pageBuilder: (context, animation, secondaryAnimation) =>
-                  FadeTransition(
-                opacity: animation,
-                child: OtpVerificationScreen(data: data),
-              ),
-            ),
-          );
-        } else {
-          // Dismiss popup and show error if API did not return 200.
-          Navigator.pop(context);
-          setState(() {
-            errorMessage = "Failed to send OTP. Please try again.";
-          });
+        SharedPreferences prefs = await getLocalUtilResource();
+        // SharedPreferences prefs = await SharedPreferences.getInstance();
+        String? localImagePath;
+        if (_profileImage != null) {
+          final Directory appDocDir = await getApplicationDocumentsDirectory();
+          final String fileExtension = p.extension(_profileImage!.path);
+          final String fileName =
+              'profile_${nameController.text.trim()}$fileExtension';
+          localImagePath = p.join(appDocDir.path, fileName);
+          await _profileImage!.copy(localImagePath);
         }
-        // await FirebaseFirestore.instance
-        //     .collection("users")
-        //     .doc(_completePhoneNumber)
-        //     .set({
-        //   "uid": user.uid,
-        //   "name": nameController.text.trim(),
-        //   "company": companyController.text.trim(),
-        //   "email": user.email,
-        //   "phone": _completePhoneNumber,
-        //   "address": addressController.text.trim(),
-        //   "createdAt": FieldValue.serverTimestamp(),
-        //   "authType": "email",
-        //   "userRole": widget.userRole,
-        // });
+
+        String hashPassword =
+            hashSensitiveInformation(passwordController.text.trim());
+
+        // final data = UserInfoData(
+        //     uid: user.uid,
+        //     name: nameController.text.trim(),
+        //     company: companyController.text.trim(),
+        //     phone: _completePhoneNumber,
+        //     country: _selectedCountry!,
+        //     password: hashPassword,
+        //     profileImagePath:
+        //         localImagePath == null ? _profilePhotoUrl! : localImagePath,
+        //     userRole: widget.userRole,
+        //     email: user.email!,
+        //     createdAt: FieldValue.serverTimestamp());
+
+        // await prefs.setString("email", user.email!);
+        // await prefs.setString("name", nameController.text.trim());
+        // await prefs.setBool("isLoggedIn", true);
+        // await prefs.setString("phoneNumber", _completePhoneNumber);
+        // await prefs.setString("userRole", widget.userRole);
+        Map<String, dynamic> data = {
+          "email": user.email,
+          "isLoggedIn": true,
+          "userRole": widget.userRole,
+          "name": nameController.text.trim()
+        };
+
+        setDataInLocalStorage(prefs, data);
+
+        await FirebaseFirestore.instance.collection("users").doc(user.uid).set({
+          "uid": user.uid,
+          "name": nameController.text.trim(),
+          "company": companyController.text.trim(),
+          "country": _selectedCountry,
+          "createdAt": FieldValue.serverTimestamp(),
+          // "authType": widget.data.authType,
+          "email": user.email,
+          "profileImagePath": _profilePhotoUrl ?? localImagePath,
+          "password": hashPassword,
+          "userRole": widget.userRole,
+          "state": selectedState,
+          "district": selectedDistrict
+        });
+        setState(() {
+          _isLoading = false;
+        });
+        Navigator.pop(context);
+        // Navigator.push(
+        //   context,
+        //   PageRouteBuilder(
+        //     transitionDuration: const Duration(milliseconds: 500),
+        //     pageBuilder: (context, animation, secondaryAnimation) =>
+        //         FadeTransition(
+        //       opacity: animation,
+        //       child: ClientDashboardScreen(),
+        //     ),
+        //   ),
+        // );
+        Navigator.pushAndRemoveUntil(
+          context,
+          PageRouteBuilder(
+            transitionDuration: const Duration(milliseconds: 500),
+            pageBuilder: (context, animation, secondaryAnimation) =>
+                FadeTransition(
+              opacity: animation,
+              child: const ClientDashboardScreen(),
+            ),
+          ),
+          (Route<dynamic> route) => false, // This removes all previous routes
+        );
+      } else {
+        // Dismiss popup and show error if API did not return 200.
+        Navigator.pop(context);
+        setState(() {
+          errorMessage = "Failed to send OTP. Please try again.";
+        });
       }
+      // await FirebaseFirestore.instance
+      //     .collection("users")
+      //     .doc(_completePhoneNumber)
+      //     .set({
+      //   "uid": user.uid,
+      //   "name": nameController.text.trim(),
+      //   "company": companyController.text.trim(),
+      //   "email": user.email,
+      //   "phone": _completePhoneNumber,
+      //   "address": addressController.text.trim(),
+      //   "createdAt": FieldValue.serverTimestamp(),
+      //   "authType": "email",
+      //   "userRole": widget.userRole,
+      // });
+
       // Navigator.pop(context);
     } catch (e) {
       print(e);
@@ -547,13 +660,40 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                                 _buildTextField(
                                     "Full Name", nameController, false),
                                 const SizedBox(height: 15),
-                                _buildTextField(
-                                    "Company Name", companyController, false),
+                                _buildTextField("Company Name (Optional)",
+                                    companyController, false),
+                                // const SizedBox(height: 15),
+                                // IntlPhoneField(
+                                //   controller: phoneController,
+                                //   decoration: InputDecoration(
+                                //     labelText: 'Phone Number',
+                                //     labelStyle:
+                                //         const TextStyle(color: Colors.white70),
+                                //     filled: true,
+                                //     fillColor: Colors.white.withOpacity(0.1),
+                                //     border: OutlineInputBorder(
+                                //       borderRadius: BorderRadius.circular(12),
+                                //       borderSide: BorderSide.none,
+                                //     ),
+                                //     contentPadding: const EdgeInsets.symmetric(
+                                //         horizontal: 20, vertical: 16),
+                                //   ),
+                                //   initialCountryCode: 'US',
+                                //   style: const TextStyle(color: Colors.white),
+                                //   onChanged: (phone) {
+                                //     _completePhoneNumber = phone.completeNumber;
+                                //   },
+                                //   validator: (phone) {
+                                //     if (phone == null || phone.number.isEmpty) {
+                                //       return "Phone number is required";
+                                //     }
+                                //     return null;
+                                //   },
+                                // ),
                                 const SizedBox(height: 15),
-                                IntlPhoneField(
-                                  controller: phoneController,
+                                InputDecorator(
                                   decoration: InputDecoration(
-                                    labelText: 'Phone Number',
+                                    labelText: "Country",
                                     labelStyle:
                                         const TextStyle(color: Colors.white70),
                                     filled: true,
@@ -563,23 +703,25 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                                       borderSide: BorderSide.none,
                                     ),
                                     contentPadding: const EdgeInsets.symmetric(
-                                        horizontal: 20, vertical: 16),
+                                        horizontal: 15, vertical: 15),
                                   ),
-                                  initialCountryCode: 'US',
-                                  style: const TextStyle(color: Colors.white),
-                                  onChanged: (phone) {
-                                    _completePhoneNumber = phone.completeNumber;
-                                  },
-                                  validator: (phone) {
-                                    if (phone == null || phone.number.isEmpty) {
-                                      return "Phone number is required";
-                                    }
-                                    return null;
-                                  },
+                                  child: Row(
+                                    children: const [
+                                      Text(
+                                        '🇮🇳',
+                                        style: TextStyle(fontSize: 24),
+                                      ),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'India',
+                                        style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 16),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                const SizedBox(height: 15),
-                                _buildTextField(
-                                    "Address", addressController, false),
+
                                 const SizedBox(height: 15),
                                 _buildPasswordField(
                                   'Password',
@@ -588,7 +730,113 @@ class _AdditionalInfoScreenState extends State<AdditionalInfoScreen> {
                                 ),
                                 const SizedBox(height: 15),
                                 _buildConfirmPasswordField(),
+                                const SizedBox(height: 15),
+                                // Dropdown for State selection with attractive border styling
+                                states.isEmpty
+                                    ? const CircularProgressIndicator()
+                                    : InputDecorator(
+                                        decoration: InputDecoration(
+                                          labelText: "Select State",
+                                          labelStyle: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 18),
+                                          filled: true,
+                                          fillColor:
+                                              Colors.white.withOpacity(0.1),
+                                          // Here we style the border to be visible
+                                          border: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            borderSide: const BorderSide(
+                                                color: Colors.white70,
+                                                width: 1.0),
+                                          ),
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 15, vertical: 15),
+                                        ),
+                                        child: DropdownButtonHideUnderline(
+                                          child: DropdownButton<String>(
+                                            isExpanded: true,
+                                            value: selectedState,
+                                            dropdownColor: Colors.black,
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 16),
+                                            items: states.map((stateData) {
+                                              return DropdownMenuItem<String>(
+                                                value: stateData.state,
+                                                child: Text(stateData.state),
+                                              );
+                                            }).toList(),
+                                            onChanged: (String? newState) {
+                                              setState(() {
+                                                selectedState = newState;
+                                                final stateData =
+                                                    states.firstWhere(
+                                                  (element) =>
+                                                      element.state == newState,
+                                                  orElse: () => states.first,
+                                                );
+                                                districts = stateData.districts;
+                                                selectedDistrict =
+                                                    districts.isNotEmpty
+                                                        ? districts.first
+                                                        : null;
+                                              });
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                const SizedBox(height: 15),
+// Dropdown for District selection with attractive border styling
+                                states.isEmpty
+                                    ? const SizedBox()
+                                    : InputDecorator(
+                                        decoration: InputDecoration(
+                                          labelText: "Select District",
+                                          labelStyle: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 18),
+                                          filled: true,
+                                          fillColor:
+                                              Colors.white.withOpacity(0.1),
+                                          border: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            borderSide: const BorderSide(
+                                                color: Colors.white70,
+                                                width: 1.0),
+                                          ),
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 15, vertical: 15),
+                                        ),
+                                        child: DropdownButtonHideUnderline(
+                                          child: DropdownButton<String>(
+                                            isExpanded: true,
+                                            value: selectedDistrict,
+                                            dropdownColor: Colors.black,
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 16),
+                                            items: districts.map((district) {
+                                              return DropdownMenuItem<String>(
+                                                value: district,
+                                                child: Text(district),
+                                              );
+                                            }).toList(),
+                                            onChanged: (String? newDistrict) {
+                                              setState(() {
+                                                selectedDistrict = newDistrict;
+                                              });
+                                            },
+                                          ),
+                                        ),
+                                      ),
+
                                 const SizedBox(height: 30),
+
                                 if (errorMessage != null) _buildErrorMessage(),
                               ],
                             ),

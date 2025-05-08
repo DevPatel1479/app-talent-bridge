@@ -1,8 +1,13 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:talentbridge/screens/client_dashboard_screen.dart';
+import 'package:talentbridge/utils/hash_utils.dart';
+import 'package:talentbridge/utils/local_storage_utils.dart';
 
 class LoginScreen extends StatefulWidget {
   final VoidCallback onToggleAuth;
@@ -10,6 +15,7 @@ class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.onToggleAuth});
 
   @override
+  // ignore: library_private_types_in_public_api
   _LoginScreenState createState() => _LoginScreenState();
 }
 
@@ -20,35 +26,284 @@ class _LoginScreenState extends State<LoginScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   bool _obscurePassword = true;
   String? errorMessage;
+  bool _isSubmitting = false;
+  void _showLoadingDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black54, // semi-transparent background
+      builder: (_) => Center(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.black87,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(
+                color: Colors.white,
+              ),
+              const SizedBox(height: 20),
+              Text(
+                message,
+                style: const TextStyle(color: Colors.white),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _hideLoadingDialog() {
+    if (Navigator.canPop(context)) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  // Future<void> _signInWithGoogle() async {
+  //   try {
+  //     final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+  //     final GoogleSignInAuthentication? googleAuth =
+  //         await googleUser?.authentication;
+  //     if (googleAuth == null) return;
+
+  //     final credential = GoogleAuthProvider.credential(
+  //       accessToken: googleAuth.accessToken,
+  //       idToken: googleAuth.idToken,
+  //     );
+
+  //     await _auth.signInWithCredential(credential);
+  //     UserCredential userCredential =
+  //         await _auth.signInWithCredential(credential);
+  //     User? user = userCredential.user;
+
+  //     if (user != null) {
+  //       print("✅ Google Email: ${user.email}");
+  //       try {
+  //         // Efficient query: Find user where 'email' equals the entered email.
+  //         QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+  //             .collection('users')
+  //             .where('email', isEqualTo: user.email)
+  //             .get();
+
+  //         if (querySnapshot.docs.isNotEmpty) {
+  //           // Fetch the first document (should be unique for a given email)
+  //           final userDoc = querySnapshot.docs.first;
+  //           final userData = userDoc.data() as Map<String, dynamic>;
+
+  //           // Login successful – you may now proceed further, such as navigating to the dashboard.
+  //           print("Login successful");
+  //           Map<String, dynamic> data = {
+  //             "email": userData["email"],
+  //             "isLoggedIn": true,
+  //             // "phoneNumber": widget.data.phone,
+  //             "userRole": userData["userRole"],
+  //             "name": userData["name"]
+  //           };
+  //           // SharedPreferences prefs = await getLocalUtilResource();
+  //           // setDataInLocalStorage(prefs, data);
+  //           print(data);
+  //           // For example, you can call Navigator.pushReplacement(...) here.
+  //         } else {
+  //           setState(() {
+  //             errorMessage = "No user found with this email";
+  //           });
+  //         }
+  //       } catch (e) {
+  //         setState(() {
+  //           errorMessage = "Error: ${e.toString()}";
+  //         });
+  //       } finally {
+  //         if (mounted) {
+  //           setState(() {
+  //             _isSubmitting = false;
+  //           });
+  //         }
+  //       }
+  //     }
+  //   } catch (e) {
+  //     setState(() {
+  //       errorMessage = "Google Sign-In Failed";
+  //     });
+  //   }
+  // }
 
   Future<void> _signInWithGoogle() async {
+    _showLoadingDialog("Signing in with Google...");
     try {
       final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
       final GoogleSignInAuthentication? googleAuth =
           await googleUser?.authentication;
-      if (googleAuth == null) return;
+      if (googleAuth == null) {
+        _hideLoadingDialog();
+        return;
+      }
 
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      await _auth.signInWithCredential(credential);
+      UserCredential userCredential =
+          await _auth.signInWithCredential(credential);
+      User? user = userCredential.user;
+
+      if (user != null) {
+        QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+            .collection('users')
+            .where('email', isEqualTo: user.email)
+            .get();
+
+        if (querySnapshot.docs.isNotEmpty) {
+          final userDoc = querySnapshot.docs.first;
+          final userData = userDoc.data() as Map<String, dynamic>;
+          print("✅ Google login successful");
+          Map<String, dynamic> data = {
+            "email": userData["email"],
+            "name": userData["name"],
+            "isLoggedIn": true,
+            // "phoneNumber": widget.data.phone,
+            "userRole": userData["userRole"],
+          };
+          print("data to shared $data");
+          SharedPreferences prefs = await getLocalUtilResource();
+          await setDataInLocalStorage(prefs, data);
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(
+              builder: (context) => const ClientDashboardScreen(),
+            ),
+            (Route<dynamic> route) => false,
+          );
+        } else {
+          setState(() {
+            errorMessage = "No user found with this email";
+          });
+        }
+      }
     } catch (e) {
       setState(() {
-        errorMessage = "Google Sign-In Failed";
+        errorMessage = "Google Sign-In Failed: $e";
       });
+    } finally {
+      _hideLoadingDialog();
     }
   }
 
+  // Future<void> _signInWithFacebook() async {
+  //   try {
+  //     final LoginResult result = await FacebookAuth.instance.login();
+  //     if (result.status == LoginStatus.success) {
+  //       final AccessToken accessToken = result.accessToken!;
+  //       final OAuthCredential credential =
+  //           FacebookAuthProvider.credential(accessToken.tokenString);
+  //       await _auth.signInWithCredential(credential);
+  //       UserCredential userCredential =
+  //           await _auth.signInWithCredential(credential);
+  //       User? user = userCredential.user;
+
+  //       if (user != null) {
+  //         print("✅ Facebook Email: ${user.email}");
+  //         try {
+  //           // Efficient query: Find user where 'email' equals the entered email.
+  //           QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+  //               .collection('users')
+  //               .where('email', isEqualTo: user.email)
+  //               .get();
+
+  //           if (querySnapshot.docs.isNotEmpty) {
+  //             // Fetch the first document (should be unique for a given email)
+  //             final userDoc = querySnapshot.docs.first;
+  //             final userData = userDoc.data() as Map<String, dynamic>;
+
+  //             // Login successful – you may now proceed further, such as navigating to the dashboard.
+  //             print("Login successful");
+  //             Map<String, dynamic> data = {
+  //               "email": userData["email"],
+  //               "isLoggedIn": true,
+  //               // "phoneNumber": widget.data.phone,
+  //               "userRole": userData["userRole"],
+  //               "name": userData["name"]
+  //             };
+  //             // SharedPreferences prefs = await getLocalUtilResource();
+  //             // setDataInLocalStorage(prefs, data);
+  //             print(data);
+  //             // For example, you can call Navigator.pushReplacement(...) here.
+  //           } else {
+  //             setState(() {
+  //               errorMessage = "No user found with this email";
+  //             });
+  //           }
+  //         } catch (e) {
+  //           setState(() {
+  //             errorMessage = "Error: ${e.toString()}";
+  //           });
+  //         } finally {
+  //           if (mounted) {
+  //             setState(() {
+  //               _isSubmitting = false;
+  //             });
+  //           }
+  //         }
+  //       }
+  //     } else {
+  //       setState(() {
+  //         errorMessage = "Facebook Sign-In Failed";
+  //       });
+  //     }
+  //   } catch (e) {
+  //     setState(() {
+  //       errorMessage = "Facebook Sign-In Error";
+  //     });
+  //   }
+  // }
+
   Future<void> _signInWithFacebook() async {
+    _showLoadingDialog("Signing in with Facebook...");
     try {
       final LoginResult result = await FacebookAuth.instance.login();
+
       if (result.status == LoginStatus.success) {
         final AccessToken accessToken = result.accessToken!;
         final OAuthCredential credential =
             FacebookAuthProvider.credential(accessToken.tokenString);
-        await _auth.signInWithCredential(credential);
+        UserCredential userCredential =
+            await _auth.signInWithCredential(credential);
+        User? user = userCredential.user;
+
+        if (user != null) {
+          QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+              .collection('users')
+              .where('email', isEqualTo: user.email)
+              .get();
+
+          if (querySnapshot.docs.isNotEmpty) {
+            final userDoc = querySnapshot.docs.first;
+            final userData = userDoc.data() as Map<String, dynamic>;
+            print("✅ Facebook login successful");
+            Map<String, dynamic> data = {
+              "email": userData["email"],
+              "isLoggedIn": true,
+              // "phoneNumber": widget.data.phone,
+              "userRole": userData["userRole"],
+              "name": userData["name"]
+            };
+            SharedPreferences prefs = await getLocalUtilResource();
+            setDataInLocalStorage(prefs, data);
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(
+                builder: (context) => const ClientDashboardScreen(),
+              ),
+              (Route<dynamic> route) => false,
+            );
+          } else {
+            setState(() {
+              errorMessage = "No user found with this email";
+            });
+          }
+        }
       } else {
         setState(() {
           errorMessage = "Facebook Sign-In Failed";
@@ -56,13 +311,16 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       setState(() {
-        errorMessage = "Facebook Sign-In Error";
+        errorMessage = "Facebook Sign-In Error: $e";
       });
+    } finally {
+      _hideLoadingDialog();
     }
   }
 
   void _validateAndSubmit() {
     if (_formKey.currentState!.validate()) {
+      _loginWithEmailAndPassword();
       setState(() {
         errorMessage = null;
       });
@@ -70,6 +328,85 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() {
         errorMessage = "Please fix the errors above";
       });
+    }
+  }
+
+  /// This function validates the form and then performs login by querying Firestore.
+  Future<void> _loginWithEmailAndPassword() async {
+    if (_formKey.currentState?.validate() != true) {
+      setState(() {
+        errorMessage = "Please fix the errors above";
+      });
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+      errorMessage = null;
+    });
+
+    final String email = emailController.text.trim();
+    final String password = passwordController.text.trim();
+
+    // Hash the provided password using SHA-256.
+    final String hashedPassword = hashSensitiveInformation(password);
+
+    try {
+      // Efficient query: Find user where 'email' equals the entered email.
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .get();
+
+      if (querySnapshot.docs.isNotEmpty) {
+        // Fetch the first document (should be unique for a given email)
+        final userDoc = querySnapshot.docs.first;
+        final userData = userDoc.data() as Map<String, dynamic>;
+        final String storedPassword = userData['password'] as String;
+
+        if (hashedPassword == storedPassword) {
+          // Login successful – you may now proceed further, such as navigating to the dashboard.
+          print("Login successful");
+          Map<String, dynamic> data = {
+            "email": userData["email"],
+            "isLoggedIn": true,
+            // "phoneNumber": widget.data.phone,
+            "userRole": userData["userRole"],
+            "name": userData["name"]
+          };
+          SharedPreferences prefs = await getLocalUtilResource();
+          await setDataInLocalStorage(prefs, data);
+          print('STORED client_name = ${prefs.getString('client_name')}');
+          print('STORED all keys   = ${prefs.getKeys()}');
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(
+              builder: (context) => const ClientDashboardScreen(),
+            ),
+            (Route<dynamic> route) => false,
+          );
+
+          print(data);
+          // For example, you can call Navigator.pushReplacement(...) here.
+        } else {
+          setState(() {
+            errorMessage = "Incorrect password";
+          });
+        }
+      } else {
+        setState(() {
+          errorMessage = "No user found with this email";
+        });
+      }
+    } catch (e) {
+      setState(() {
+        errorMessage = "Error: ${e.toString()}";
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
     }
   }
 
@@ -207,9 +544,10 @@ class _LoginScreenState extends State<LoginScreen> {
         !RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
             .hasMatch(value)) {
       return "Enter a valid email address";
-    } else if (label == "Password" && value.length < 6) {
-      return "Password must be at least 6 characters long";
     }
+    // } else if (label == "Password") {
+    //   return "Password must be at least 6 characters long";
+    // }
     return null;
   }
 
@@ -341,14 +679,18 @@ class _LoginScreenState extends State<LoginScreen> {
               borderRadius: BorderRadius.circular(12),
             ),
           ),
-          child: const Text(
-            "Login",
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
-            ),
-          ),
+          child: _isSubmitting
+              ? const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                )
+              : const Text(
+                  "Login",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
         ),
       ),
     );
@@ -370,6 +712,3 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 }
-
-
-

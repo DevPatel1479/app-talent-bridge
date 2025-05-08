@@ -3,7 +3,10 @@ import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:talentbridge/auth/authentication_screen.dart';
+
+import 'package:talentbridge/freelancer/home.dart';
 import 'package:talentbridge/screens/client_dashboard_screen.dart';
+import 'package:talentbridge/screens/freelancer_dashboard_screen.dart';
 import '../widgets/role_card.dart';
 import 'package:flutter/services.dart';
 
@@ -104,7 +107,7 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
                       title: 'Freelancer',
                       icon: Icons.work,
                       color: Colors.tealAccent[400]!,
-                      onTap: () => _navigateToScreen(),
+                      onTap: () => _navigateToScreen(screen: HomeScreen()),
                     ),
                   ),
                 ),
@@ -120,8 +123,10 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
                       title: 'Client',
                       icon: Icons.business,
                       color: Colors.blueAccent,
-                      onTap: () =>
-                          _navigateToScreen(screen: AuthenticationScreen(userRole: "Client",)),
+                      onTap: () => _navigateToScreen(
+                          screen: AuthenticationScreen(
+                        userRole: "Client",
+                      )),
                     ),
                   ),
                 ),

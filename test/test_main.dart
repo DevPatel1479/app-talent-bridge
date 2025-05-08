@@ -6,7 +6,7 @@ import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import '../test/background_tasks.dart';
 import '../test/users_list_screen.dart';
 import '../test/signup_screen.dart';
-import 'chat_screen.dart';
+import '../lib/utils/chat_utility/chat_screen.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 

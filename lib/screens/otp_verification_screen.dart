@@ -3,10 +3,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
-
 import 'package:talentbridge/model/UserInfoModel.dart';
 import 'package:http/http.dart' as http;
 import 'package:talentbridge/api_services/api_service.dart' as api;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:talentbridge/screens/client_dashboard_screen.dart';
+import 'package:talentbridge/screens/role_selection_screen.dart';
+import 'package:talentbridge/utils/local_storage_utils.dart';
 
 class OtpVerificationScreen extends StatefulWidget {
   final UserInfoData data;
@@ -22,11 +25,15 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
   final List<FocusNode> _otpFocusNodes = List.generate(6, (_) => FocusNode());
   bool _isVerifying = false;
   String? _otpError;
-
+  final FirebaseAuth _auth = FirebaseAuth.instance;
   @override
   void initState() {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // Optionally set focus to the first OTP field when the screen loads
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusScope.of(context).requestFocus(_otpFocusNodes[0]);
+    });
   }
 
   @override
@@ -46,10 +53,44 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
       "data": {"email": email, "otp": otp}
     }).verifyOTP();
 
-    if (response.statusCode == 200) {
-      return true;
+    return response.statusCode == 200;
+  }
+
+  Future<void> _storeUserDataInBackground() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        Map<String, dynamic> data = {
+          "email": widget.data.email,
+          "isLoggedIn": true,
+          // "phoneNumber": widget.data.phone,
+          "userRole": widget.data.userRole,
+          "name": widget.data.name
+        };
+
+        SharedPreferences prefs = await getLocalUtilResource();
+        setDataInLocalStorage(prefs, data);
+
+        await FirebaseFirestore.instance
+            .collection("users")
+            .doc(widget.data.uid)
+            .set({
+          "uid": user.uid,
+          "email": user.email,
+          "name": widget.data.name,
+          "company": widget.data.company,
+          "country": widget.data.country,
+          "createdAt": FieldValue.serverTimestamp(),
+          "profileImagePath": widget.data.profileImagePath,
+          "password": widget.data.password,
+          "userRole": widget.data.userRole,
+          "state": widget.data.state,
+          "district": widget.data.district
+        });
+      }
+    } catch (e) {
+      print("Error storing user data: $e");
     }
-    return false;
   }
 
   Future<void> _onVerify() async {
@@ -57,6 +98,9 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
       _isVerifying = true;
       _otpError = null;
     });
+
+    FocusScope.of(context).unfocus();
+
     final otp = _otpCode;
     if (otp.length != 6) {
       setState(() {
@@ -65,51 +109,54 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
       });
       return;
     }
+
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final success = await _verifyOtp(user.email!, otp);
+      final success = await _verifyOtp(widget.data.email, otp);
+      print(success);
       if (success) {
-        try {
-          // final user = FirebaseAuth.instance.currentUser;
-          // if (user != null) {
-          //   await FirebaseFirestore.instance
-          //       .collection("users")
-          //       .doc(widget.data.phone)
-          //       .set({
-          //     "uid": user.uid,
-          //     "name": widget.data.name,
-          //     "company": widget.data.company,
-          //     "phone": widget.data.phone,
-          //     "address": widget.data.address,
-          //     "createdAt": FieldValue.serverTimestamp(),
-          //     "authType": widget.data.authType,
-          //     "userRole": widget.data.userRole,
-          //   });
-          // }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text("OTP Verified! Your data has been stored."),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 2),
-            ),
-          );
-          
-          // Navigator.popUntil(context, (route) => route.isFirst);
-        } catch (e) {
-          setState(() {
-            _otpError = "Error storing data: ${e.toString()}";
-          });
+        final userCredential = await _auth.createUserWithEmailAndPassword(
+          email: widget.data.email,
+          password: widget.data.password,
+        );
+        final user = userCredential.user;
+        if (user != null) {
+          widget.data.uid = user.uid;
+          await user.updateDisplayName(widget.data.name);
+          _storeUserDataInBackground();
         }
+
+        setState(() {
+          _isVerifying = false;
+        });
+        Navigator.pushAndRemoveUntil(
+          context,
+          PageRouteBuilder(
+            transitionDuration: const Duration(milliseconds: 100),
+            pageBuilder: (context, animation, secondaryAnimation) =>
+                FadeTransition(
+              opacity: animation,
+              child: const ClientDashboardScreen(),
+            ),
+          ),
+          (Route<dynamic> route) => false,
+        );
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("OTP Verified!"),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
       } else {
         setState(() {
           _otpError = "Invalid OTP. Please try again.";
+
+          _isVerifying = false;
         });
       }
     }
-
-    setState(() {
-      _isVerifying = false;
-    });
   }
 
   Widget _buildOtpBox(int index, double boxSize) {
@@ -138,11 +185,16 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
           ),
         ),
         onChanged: (value) {
-          if (value.isNotEmpty && index < 5) {
-            _otpFocusNodes[index].unfocus();
-            FocusScope.of(context).requestFocus(_otpFocusNodes[index + 1]);
-          } else if (value.isEmpty && index > 0) {
-            FocusScope.of(context).requestFocus(_otpFocusNodes[index - 1]);
+          if (value.length == 1) {
+            if (index < _otpFocusNodes.length - 1) {
+              FocusScope.of(context).requestFocus(_otpFocusNodes[index + 1]);
+            } else {
+              FocusScope.of(context).unfocus();
+            }
+          } else if (value.isEmpty) {
+            if (index > 0) {
+              FocusScope.of(context).requestFocus(_otpFocusNodes[index - 1]);
+            }
           }
         },
       ),
@@ -183,7 +235,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
         MediaQuery.of(context).orientation == Orientation.portrait;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle(
+      value: const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Brightness.light,
         systemNavigationBarColor: Colors.transparent,
